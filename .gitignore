@@ -1,0 +1,6 @@
+__pycache__
+terraform/.terraform*
+terraform/terraform.tfstate*
+.idea
+*tfstate
+.DS_Store

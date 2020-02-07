@@ -1,0 +1,4 @@
+/rnode.conf.d/[2-3][0-9]-*.conf          filter=git-crypt diff=git-crypt
+/rshard/rnode.conf.d/[6-7][0-9]-*.conf   filter=git-crypt diff=git-crypt
+/rshard/node*/rnode.conf.d/9[0-9]-*.conf filter=git-crypt diff=git-crypt
+/rshard/node*/node.key.pem               filter=git-crypt diff=git-crypt
