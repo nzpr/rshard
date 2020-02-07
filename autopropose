@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e -o pipefail
+
+conf_file=/var/lib/rnode-static/autopropose.conf
+
+if [[ -r $conf_file ]]; then
+	source $conf_file
+fi
+
+: ${period:=60}
+if [[ -v contract ]]; then
+	export RD_OPTION_CONTRACT=$contract
+	export RD_OPTION_USE_RNODE_CLIENT=$use_rnode_client
+fi
+
+ret=0
+
+while :; do
+	while [[ -z "$(docker ps -q -f name='^rnode$')" ]]; do
+		sleep 15
+	done
+
+	# Do not deploy more contracts if previous propose failed
+	if [[ -v contract && $ret -eq 0 ]]; then
+		/opt/rchain-testnet-node/rundeck-scripts/deploy || true
+	fi
+
+	if (( period )); then
+		sleep "$((period - $(date +%s) % period))"
+	fi
+
+	ret=0
+	/opt/rchain-testnet-node/rundeck-scripts/propose || ret=$?
+done

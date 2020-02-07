@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+local_dir="${1:-$DIAG_DIR}"
+[[ -d "$local_dir" ]]
+
+flock -w 300 "$local_dir" _unlocked-sync-diag-dir "$local_dir"

@@ -1,0 +1,21 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+node_pid="$(get_node_pid)"
+check_diag_directory
+out_dir="$DIAG_DIR/vdag"
+mkdir -p "$out_dir"
+ts="$(get_current_timestamp)"
+
+docker exec rnode ./bin/rnode vdag >"$out_dir/vdag.$ts.dot"
+dot -Tpng <"$out_dir/vdag.$ts.dot" >"$out_dir/vdag.$ts.png"
+dot -Tsvg <"$out_dir/vdag.$ts.dot" >"$out_dir/vdag.$ts.svg"
+
+ln -frs "$out_dir/vdag.$ts.dot" "$out_dir/vdag.dot"
+ln -frs "$out_dir/vdag.$ts.png" "$out_dir/vdag.png"
+ln -frs "$out_dir/vdag.$ts.svg" "$out_dir/vdag.svg"
+
+echo "VDAG DOT: $out_dir/vdag.dot"
+echo "VDAG PNG: $out_dir/vdag.png"
+echo "VDAG SVG: $out_dir/vdag.svg"

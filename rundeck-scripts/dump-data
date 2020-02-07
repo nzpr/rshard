@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+check_diag_directory
+logcmd tar -czhf "$DIAG_DIR/data.tar.gz" /var/lib/rnode
+sync-diag-dir

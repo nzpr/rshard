@@ -1,0 +1,51 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+if [[ -z "$RD_OPTION_CONTRACT" || "$RD_OPTION_CONTRACT" == none ]]; then
+	# Special case for autopropose
+	exit 0
+elif [[ "$RD_OPTION_CONTRACT" == random ]]; then
+	contract="$(ls /var/lib/rnode-static/contracts/*.rho | sort -R | head -1)"
+elif [[ "$RD_OPTION_CONTRACT" =~ ^https?:// ]]; then
+	contract=/var/lib/rnode-static/rundeck-contract.rho
+	logcmd curl -fsSL -o $contract "$RD_OPTION_CONTRACT"
+elif [[ "$RD_OPTION_CONTRACT" != */* ]]; then
+	contract="/var/lib/rnode-static/contracts/$RD_OPTION_CONTRACT"
+	if [[ ! -f "$contract" ]]; then
+		echo "No such contract: $contract" >&2
+		exit 1
+	fi
+else
+	echo "Illegal contract path/URL: $RD_OPTION_CONTRACT" >&2
+	exit 1
+fi
+
+# We will pay for executing a contract with this hardcoded wallet
+# ETH address SHOULD BE in genesis/wallets.txt file
+
+priv_key=$(cat /var/lib/rnode-static/deployer.sk)
+#priv_key="$RD_OPTION_DEPLOY_KEY"
+#if [[ -z "$priv_key" ]]; then
+#	read priv_key pub_key <<<$(random_key)
+#fi
+
+if [[ $RD_OPTION_USE_RNODE_CLIENT == "True" ]]; then
+	echo "RNODeploying $contract with private key $priv_key"
+	bn=$(docker exec rnode ./bin/rnode show-blocks | grep blockNumber | head -1 | sed "s/blockNumber://g")
+	logcmd docker exec rnode ./bin/rnode \
+		$RD_OPTION_RNODE_LAUNCHER_ARGS \
+		-c /var/lib/rnode-static/rnode.conf \
+		deploy \
+		--phlo-limit 1000000000 \
+		--phlo-price 1 \
+		--private-key $priv_key \
+		--valid-after-block-number -1 \
+		$RD_OPTION_RNODE_DEPLOY_ARGS \
+		$contract
+else
+	echo "Deploying $contract with private key $priv_key"
+	pushd $INSTALL_DIR/scripts/ > /dev/null
+	exec python3 deploy.py $priv_key "$contract" scripts.conf
+	popd > /dev/null
+fi

@@ -1,0 +1,36 @@
+
+# PROVIDE HERE KEYS FOR DEPLOYS
+case $(hostname) in
+    "node0")
+        echo "NODE_0_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node1")
+        echo "NODE_1_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node2")
+        echo "NODE_2_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node3")
+        echo "NODE_3_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node4")
+        echo "NODE_4_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node5")
+        echo "NODE_5_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node6")
+        echo "NODE_6_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node7")
+        echo "NODE_7_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node8")
+        echo "NODE_8_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;
+	"node9")
+        echo "NODE_9_DEPLOYER_KEY" > /var/lib/rnode-static/deployer.sk
+        ;;	
+    *)
+        ;;
+esac

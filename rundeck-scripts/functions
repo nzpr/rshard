@@ -1,0 +1,210 @@
+# vim:ft=sh
+
+INSTALL_DIR="$(realpath $(dirname ${BASH_SOURCE[0]})/..)"
+export PATH="$INSTALL_DIR/rundeck-scripts:$INSTALL_DIR/scripts:/snap/bin:$PATH"
+
+source "$INSTALL_DIR/scripts/venv/bin/activate"
+
+#exec {_log_fd}>&1
+_log_fd=2
+logcmd()
+{
+	echo ">> $@" >&$_log_fd
+	eval "$@"
+}
+
+get_current_timestamp()
+{
+	date -Is | sed 's/+.*//; s/[^[:alnum:]-]/-/g'
+}
+
+get_random_string()
+(
+	set +o pipefail
+	tr -Cd a-z0-9 </dev/urandom | head -c${1-6}
+)
+
+sanitize_string()
+{
+	if [[ -z "$1" ]]; then
+		echo "Usage: $0 <string>" >&2
+		return 1
+	fi
+	echo -n "$1" | tr -C 0-9A-Za-z-_ -
+}
+
+random_key()
+{
+	python3 "$INSTALL_DIR/scripts/lib_rchain_key.py"
+}
+
+get_node_pid()
+{
+	local node_pid
+	node_pid="$(docker inspect -f '{{.State.Pid}}' rnode || echo 0)"
+	if (( node_pid == 0 )); then
+		echo "Node is not running" >&2
+		return 1
+	fi
+	echo $node_pid
+}
+
+get_tls_node_id()
+{
+	pem-key-to-node-id /var/lib/rnode-static/node.key.pem
+}
+
+merge_rnode_conf_fragments()
+(
+	echo "Merging configuration fragments to /var/lib/rnode/rnode.conf"
+	umask 077
+	merge-hocon-fragments /var/lib/rnode-static/rnode.conf.d \
+		>/var/lib/rnode/rnode.conf
+)
+
+########## RNODE.CONF ##########
+
+get_config_value()
+{
+	local key
+	key="$(sed -r 's/([^\.]+)/"\1"/g' <<<$1)"
+	jq -r "$key // \"$2\"" </var/lib/rnode-static/rnode.conf
+}
+
+parse_rnode_config()
+{
+	rnode_grpc_port_external=40401
+	rnode_casper_genesis_validator=false
+	rnode_casper_required_signatures=0
+	rnode_server_port_kademlia=40404
+	rnode_server_port=40400
+	rnode_server_standalone=false
+
+	rnode_launcher_other_args=
+	rnode_run_other_args=
+
+	parse_rnode_config_file
+	parse_rnode_launcher_args $RD_OPTION_RNODE_LAUNCHER_ARGS
+	parse_rnode_run_args $RD_OPTION_RNODE_RUN_ARGS
+}
+
+parse_rnode_config_file()
+{
+	eval "$(json2env </var/lib/rnode/rnode.conf)"
+}
+
+parse_rnode_launcher_args()
+{
+	while (( $# )); do
+		case "$1" in
+			-g|--grpc-port) rnode_grpc_port_external="$2"; shift ;;
+			*) rnode_launcher_other_args+=" ${1@Q}" ;;
+		esac
+		shift
+	done
+}
+
+parse_rnode_run_args()
+{
+	while (( $# )); do
+		case "$1" in
+			-b|--bootstrap) rnode_server_bootstrap="$2"; shift ;;
+			-g|--genesis-validator) rnode_casper_genesis_validator=true ;;
+			--kademlia-port) rnode_server_port_kademlia="$2"; shift ;;
+			-p|--port) rnode_server_port="$2"; shift ;;
+			-r|--required-sigs) rnode_casper_required_signatures="$2"; shift ;;
+			-s|--standalone) rnode_server_standalone=true ;;
+			*) rnode_run_other_args+=" ${1@Q}" ;;
+		esac
+		shift
+	done
+}
+
+print_cli_param()
+{
+	echo -n " $1 ${!2@Q}"
+}
+
+print_cli_flag()
+{
+	if [[ "${!2}" == true ]]; then
+		echo -n " $1"
+	fi
+}
+
+get_rnode_launcher_args()
+{
+	echo -n "$rnode_launcher_other_args"
+	print_cli_param --grpc-port rnode_grpc_port_external
+	echo
+}
+
+get_rnode_run_args()
+{
+	echo -n "$rnode_run_other_args"
+	print_cli_param --bootstrap rnode_server_bootstrap
+	print_cli_flag  --genesis-validator rnode_casper_genesis_validator
+	print_cli_param --kademlia-port rnode_server_port_kademlia
+	print_cli_param --port rnode_server_port
+	print_cli_param --required-sigs rnode_casper_required_signatures
+	print_cli_flag  --standalone rnode_server_standalone
+	echo
+}
+
+get_node_address()
+(
+	set -u
+	node_id=${1:-$(get_tls_node_id)}
+	printf 'rnode://%s@%s?protocol=%s&discovery=%s' \
+		$node_id \
+		$rnode_server_host \
+		$rnode_server_port \
+		$rnode_server_port_kademlia
+)
+
+########## DIAGNOSTICS ##########
+
+LOCAL_DIAG_ROOT=/var/lib/rnode-diag
+DIAG_DIR=$LOCAL_DIAG_ROOT/current
+
+init_diag_variables()
+{
+	local local_diag_dir=$1
+
+	if [[ ! -d "$local_diag_dir" ]]; then
+		echo "No such directoy: '$local_diag_dir'" >&2
+		return 1
+	fi
+
+	DIAG_TAG="$(basename $(realpath -e $local_diag_dir))"
+
+	local fqdn domain
+	fqdn=$(hostname -f)
+	domain=${fqdn#*.}
+	if [[ -z "$domain" || "$domain" == *.internal ]]; then
+		domain=znodomain
+	fi
+
+	REMOTE_DIAG_DIR=/mnt/heapdumps/$domain/$DIAG_TAG
+	REMOTE_DIAG_URL="https://files.rchain-dev.tk/heapdumps/$domain/$DIAG_TAG/"
+
+	export DIAG_TAG REMOTE_DIAG_DIR REMOTE_DIAG_URL
+
+	sed -E \
+		-e "s|@@HOSTNAME@@|$fqdn|g" \
+		-e "s|@@ARCHIVE_URL@@|$REMOTE_DIAG_URL|g" \
+		< $INSTALL_DIR/index.html.in \
+		> $DIAG_DIR/_index.html
+}
+
+check_diag_directory()
+{
+	if [[ ! -d $DIAG_DIR ]]; then
+		echo "Local path for diagnostic files $DIAG_DIR does not exist" >&2
+		echo "Most probably RNode was not yet started on this machine." >&2
+		return 1
+	else
+		init_diag_variables $DIAG_DIR
+		echo "Diagnostic files archive: $REMOTE_DIAG_URL"
+	fi
+}

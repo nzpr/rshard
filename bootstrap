@@ -1,0 +1,13 @@
+#!/bin/bash
+# Shebang is for Terraform script provisioner
+
+REPO_URL=https://github.com/rchain/rshard/
+REPO_DIR=/opt/rshard
+GIT_CRYPT_KEY_FILE=/root/rshard-secret.key
+SETUP_SCRIPT_URL=https://raw.githubusercontent.com/rchain/rchain-testnet-node/master/update-run-setup
+PROFILE=rshard
+REPO_BRANCH=master
+
+if [[ -z "$SETUP_SCRIPT_RUNNING" ]]; then
+	source <(curl -fsSL "$SETUP_SCRIPT_URL")
+fi

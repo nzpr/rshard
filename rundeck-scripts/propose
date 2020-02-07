@@ -1,0 +1,26 @@
+#!/bin/bash
+set -e
+source "$(dirname $0)/functions"
+
+if [[ $RD_OPTION_USE_RNODE_CLIENT == "True" ]]; then
+	echo "RNode: Proposing..."
+	ret=0
+	output="$(docker exec rnode \
+		./bin/rnode -c /var/lib/rnode-static/rnode.conf propose 2>&1)" || ret=$?
+
+	if [[ $ret -ne 0 && "$output" == *NoNewDeploys* ]]; then
+		ret=0
+	fi
+
+	if (( ret )); then
+		echo "$output" >&2
+	else
+		echo "$output"
+	fi
+	exit $ret
+else
+	echo "Proposing..."
+	pushd $INSTALL_DIR/scripts/ > /dev/null
+	exec python3 propose.py scripts.conf
+	popd > /dev/null
+fi

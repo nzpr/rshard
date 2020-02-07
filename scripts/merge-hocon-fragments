@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+
+import argparse
+import json
+import os.path
+from glob import glob
+
+import pyjq
+from natsort import natsorted
+from pyhocon import ConfigFactory
+from pyhocon.converter import HOCONConverter
+
+
+def get_fragment_paths(fragment_args, ignore_missing):
+    for arg in fragment_args:
+        if os.path.isdir(arg):
+            for conf_path in natsorted(glob(os.path.join(arg, '*.conf'))):
+                if os.path.isfile(conf_path):
+                    yield conf_path
+        elif os.path.exists(arg):
+            yield arg
+        elif not ignore_missing:
+            raise FileNotFoundError(arg)
+
+
+argp = argparse.ArgumentParser()
+argp.add_argument('-i', '--ignore-missing', action='store_true')
+argp.add_argument('-f', '--output-format', default='json')
+argp.add_argument('fragment', nargs='*')
+args = argp.parse_args()
+
+result = pyjq.first(
+    'reduce .[] as $item ({}; . * $item)', [
+        ConfigFactory.parse_file(path)
+        for path in get_fragment_paths(args.fragment, args.ignore_missing)
+    ])
+
+print(
+    HOCONConverter.convert(
+        ConfigFactory.from_dict(result),
+        output_format=args.output_format,
+        indent=4))

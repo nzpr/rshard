@@ -1,0 +1,10 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+node_pid="$(get_node_pid)"
+check_diag_directory
+out_file="$DIAG_DIR/heapdump.$(get_current_timestamp).hprof"
+
+logcmd jcmd $node_pid GC.heap_dump "$out_file"
+sync-diag-dir

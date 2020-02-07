@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/rundeck-scripts/functions"
+
+for local_dir in "$LOCAL_DIAG_ROOT"/*; do
+	if [[ -d "$local_dir" && "$local_dir" != "$DIAG_DIR" ]]; then
+		sync-diag-dir "$local_dir"
+		if [[ ! "$local_dir" -ef "$DIAG_DIR" ]]; then
+			rm -rf "$local_dir"
+		fi
+	fi
+done

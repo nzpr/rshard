@@ -1,0 +1,135 @@
+#!/bin/bash
+set -e
+
+# Set FORCE_UPDATE=1 if you want to force set HEAD to remote branch.
+# This is handy if you force pushed to remote branch or there are
+# local uncommitted changes.
+
+# Initialize main variables
+
+# The bootstrap script conditionally sourced below must check this
+# variable is not set before running us
+SETUP_SCRIPT_RUNNING=1
+
+if [[ -z "$REPO_DIR" ]]; then
+	if [[ -z "${BASH_SOURCE[0]}" ]]; then
+		if [[ -z "$REPO_URL" ]]; then
+			echo "REPO_URL must be set during bootstrap" >&2
+			exit 1
+		else
+			REPO_DIR="$(basename $REPO_URL)"
+		fi
+	else
+		# We're probably run by Cron
+		REPO_DIR="$(dirname $(readlink -e ${BASH_SOURCE[0]}))"
+		if [[ -f $REPO_DIR.profile || -h $REPO_DIR.profile ]]; then
+			source "$REPO_DIR.profile"
+		else
+			source "$REPO_DIR/bootstrap"
+		fi
+	fi
+fi
+
+if [[ ! -d "$REPO_DIR" && -z "$REPO_URL" ]]; then
+	echo "REPO_DIR=$REPO_DIR does not exist and REPO_URL is empty" >&2
+	exit 1
+fi
+
+# Initialize other variables
+
+state_file="/var/cache/$(basename $REPO_DIR)-setup-gitrev"
+cron_symlink="/etc/cron.hourly/$(basename $REPO_DIR)-update-run-setup"
+
+# Make sure we don't conflict with apt.systemd.daily
+
+mask_services='apt-daily apt-daily-upgrade'
+stop_services='unattended-upgrades'
+
+cleanup()
+{
+	systemctl unmask $mask_services
+	systemctl isolate default
+}
+trap cleanup EXIT
+
+systemctl mask $mask_services
+systemctl stop $stop_services
+
+echo -n "Waiting for following services to finish: $mask_services... "
+while systemctl is-active $mask_services >/dev/null 2>&1; do
+	sleep 1
+done
+echo "OK"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Install our dependencies
+
+if ! type -P git git-crypt >/dev/null || [[ ! -d /etc/cron.hourly ]]; then
+	# after boot apt often fails to find git-crypt after single apt update
+	apt update -q ; sleep 10 ; apt update -q
+	apt install -yq --no-install-recommends git git-crypt cron
+fi
+
+# Clone or update main Git repositoriy
+
+: ${REPO_BRANCH:=master}
+
+if [[ ! -d $REPO_DIR ]]; then
+	git clone -n $REPO_URL -b $REPO_BRANCH $REPO_DIR
+else
+	git -C $REPO_DIR remote set-url origin $REPO_URL
+fi
+
+cd $REPO_DIR
+git fetch
+
+if ! (( $FORCE_UPDATE )); then
+	git checkout $REPO_BRANCH
+	git merge origin/$REPO_BRANCH
+
+	# Exit if setup from latest Git ref has been run already
+
+	curr_gitrev="$(git rev-parse --short HEAD)"
+	if [[ -e $state_file ]]; then
+		last_gitrev="$(cat $state_file)"
+		if [[ "$last_gitrev" == "$curr_gitrev" ]]; then
+			exit 0
+		fi
+	fi
+else
+	if [[ -f .git/MERGE_HEAD ]]; then
+		git merge --abort
+	fi
+	git checkout -f $REPO_BRANCH
+	git reset --hard origin/$REPO_BRANCH
+fi
+
+# Unlock Git repository if necessary
+
+if [[ -n "$GIT_CRYPT_KEY_FILE" ]]; then
+	( umask 077 && git-crypt unlock $GIT_CRYPT_KEY_FILE )
+fi
+
+cat $REPO_DIR/rundeck-scripts/start-node1 > $REPO_DIR/rundeck-scripts/start-node
+cat $REPO_DIR/rundeck-scripts/start-node2.deployer_keys >> $REPO_DIR/rundeck-scripts/start-node
+cat $REPO_DIR/rundeck-scripts/start-node3 >> $REPO_DIR/rundeck-scripts/start-node
+chmod +x $REPO_DIR/rundeck-scripts/start-node
+
+# Install Cron job
+
+if [[ ! $cron_symlink -ef update-run-setup ]]; then
+	ln -sf $REPO_DIR/update-run-setup $cron_symlink
+fi
+
+# Run main setup script exclusively
+
+export PROFILE
+
+ret=0
+flock -x -n -E 77 $state_file ./run-setup || ret=$?
+case $ret in
+	0)  echo "$curr_gitrev" >$state_file ;;
+	77) echo "Another instance is running" >&2 ;;
+esac
+exit $ret

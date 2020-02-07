@@ -1,0 +1,30 @@
+#!/bin/bash
+
+conf_file=/var/lib/rnode-static/autopropose.conf
+
+case "$RD_OPTION_STATE" in
+	disabled)
+		systemctl mask --now autopropose
+		rm -f $conf_file
+		;;
+	enabled)
+		if [[ ! "$RD_OPTION_PERIOD" =~ ^[0-9]+$ ]]; then
+			echo "Invalid period: '$RD_OPTION_PERIOD'"
+			exit 1
+		fi
+
+		cat >$conf_file <<-EOF
+		period=$RD_OPTION_PERIOD
+		contract=${RD_OPTION_CONTRACT@Q}
+		use_rnode_client=$RD_OPTION_USE_RNODE_CLIENT
+		EOF
+
+		systemctl unmask autopropose
+		systemctl enable autopropose
+		systemctl restart autopropose
+		;;
+	*)
+		echo "Invalid state: '$RD_OPTION_STATE'"
+		exit 1
+		;;
+esac

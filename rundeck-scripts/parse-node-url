@@ -1,0 +1,20 @@
+#!/usr/bin/python3
+
+import sys
+from urllib.parse import urlparse, parse_qs
+from shlex import quote
+
+if len(sys.argv) < 2:
+    print('Usage: {} <url> [var-prefix]'.format(sys.argv[0]), file=sys.stderr)
+    sys.exit(1)
+
+url = sys.argv[1]
+var_prefix = sys.argv[2] if len(sys.argv) > 2 else ''
+
+parts = urlparse(url)
+query = parse_qs(parts.query)
+
+print('{}node_id={}'.format(var_prefix, quote(parts.username)))
+print('{}hostname={}'.format(var_prefix, quote(parts.hostname)))
+print('{}port={}'.format(var_prefix, quote(query['protocol'][0])))
+print('{}port_kademlia={}'.format(var_prefix, quote(query['discovery'][0])))

@@ -1,0 +1,12 @@
+[Unit]
+Description=RNode Periodic Propose
+Requires=docker.service
+After=docker.service
+
+[Service]
+ExecStart=/opt/rchain-testnet-node/autopropose
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

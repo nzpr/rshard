@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+source "$(dirname $0)/functions"
+
+# Python is used only for pyrchain to call deploys and proposes.
+# There might be proposals called via subprocesses in progress when node is stopped,
+# so we kill python3 to not let them hang and deface influxdb metrics.
+killall python3 || true
+
+logcmd docker stop rnode >/dev/null && docker rm rnode >/dev/null || true
+
+if [[ "$RD_OPTION_CLEAN_DATA" == yes ]]; then
+	logcmd rm -rf /var/lib/rnode
+fi

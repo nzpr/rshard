@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+
+import sys, os
+import json
+from pathlib import Path
+
+import lib_rchain_key
+import lib_rnode_tls
+
+if len(sys.argv) != 3:
+    print(f'Usage: {sys.argv[0]} <hostname> <out-dir>', file=sys.stderr)
+    sys.exit(1)
+
+hostname = sys.argv[1]
+out_dir = Path(sys.argv[2])
+
+######################################################################
+# Generate config
+
+key, pub_key = lib_rchain_key.generate_key_pair_hex()
+tls_key, tls_cert, node_id = lib_rnode_tls.generate_node_tls_key_cert_id()
+
+conf_public = {
+    'rnode': {
+        'casper': {
+            'validator-public-key': pub_key
+        },
+        'server': {
+            'host': hostname
+        }
+    }
+}
+conf_private = {'rnode': {'casper': {'validator-private-key': key}}}
+
+######################################################################
+# Save it
+
+conf_dir = out_dir / 'rnode.conf.d'
+conf_private_file = conf_dir / '90-node-private.conf'
+conf_public_file = conf_dir / '80-node.conf'
+tls_key_file = out_dir / 'node.key.pem'
+tls_cert_file = out_dir / 'node.certificate.pem'
+
+conf_dir.mkdir()
+conf_private_file.touch(mode=0o600)
+conf_private_file.write_text(json.dumps(conf_private, indent=4))
+conf_public_file.write_text(json.dumps(conf_public, indent=4))
+tls_key_file.touch(mode=0o600)
+tls_key_file.write_text(tls_key)
+tls_cert_file.write_text(tls_cert)

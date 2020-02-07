@@ -1,0 +1,7 @@
+#!/usr/bin/jq -rf
+
+tostream | select(length == 2) | (
+	( [ .[0][] | tostring | gsub("[^\\w]"; "_") ] | join("_") )
+	+ "=" +
+	( .[1] | tostring | @sh )
+)

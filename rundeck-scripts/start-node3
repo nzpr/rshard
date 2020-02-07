@@ -1,0 +1,240 @@
+
+try_download_file "$RD_OPTION_RNODE_OVERRIDE_CONF_URL" /var/lib/rnode/rnode.override.conf 600
+
+ln -sf /var/lib/rnode-static/node.*.pem /var/lib/rnode/
+
+######################################################################
+# create bonds.txt file
+
+bonds_tmp=$(mktemp bonds.txt.XXXXXX)
+
+if [[ -n $RD_OPTION_BONDS_FILE_URL ]]; then
+	curl -fsSL "$RD_OPTION_BONDS_FILE_URL" |\
+		sed 's/^[[:blank:]]*//; s/[[:blank:]]*$//; /^$/d' > $bonds_tmp
+fi
+
+tac $bonds_tmp | awk '!seen[$1]++' | tac >/var/lib/rnode/genesis/bonds.txt
+rm $bonds_tmp
+
+######################################################################
+# generate config file
+
+merge_rnode_conf_fragments
+
+# Create rnode.redacted.conf with default permissions so that it's
+# accessible by nginx. umask should have world readable bit cleared.
+jq 'del(.rnode.server.casper."validator-private-key")' \
+	< /var/lib/rnode/rnode.conf \
+	> /var/lib/rnode/rnode.redacted.conf
+
+######################################################################
+# load config file and adjust command line options
+
+parse_rnode_config
+
+if [[
+	$rnode_server_standalone != true &&
+	-n $rnode_server_bootstrap
+]]; then
+	eval "$(parse-node-url "$rnode_server_bootstrap" bootstrap_)"
+fi
+
+if [[
+	$rnode_server_standalone == true ||
+	-z $rnode_server_bootstrap ||
+	$bootstrap_node_id == $(get_tls_node_id)
+]]; then
+	rnode_server_standalone=true
+	echo "Node is standalone"
+else
+	bootstrap_ip="$(dig +short $bootstrap_hostname A | tail -1)"
+	if [[ -n "$bootstrap_ip" ]]; then
+		echo "Node will bootstrap from $bootstrap_hostname ($bootstrap_ip)"
+	else
+		echo "Failed to resolve bootstrap hostname '$bootstrap_hostname'" >&2
+		exit 1
+	fi
+fi
+
+if [[
+	$rnode_casper_required_signatures -gt 0 &&
+	$rnode_server_standalone != true 
+]]; then
+	rnode_casper_genesis_validator=true
+fi
+
+######################################################################
+# initial network isolation
+
+if ! iptables -L rnode_iblock >/dev/null 2>&1; then
+	iptables -N rnode_iblock
+fi
+if ! iptables -L rnode_oblock >/dev/null 2>&1; then
+	iptables -N rnode_oblock
+fi
+if ! iptables -L rnode_isel >/dev/null 2>&1; then
+	iptables -N rnode_isel
+	iptables -I INPUT 1 -j rnode_isel
+fi
+if ! iptables -L rnode_osel >/dev/null 2>&1; then
+	iptables -N rnode_osel
+	iptables -I OUTPUT 1 -j rnode_osel
+fi
+
+iptables -F rnode_iblock
+iptables -A rnode_iblock -i lo -j RETURN
+if [[ $rnode_server_standalone != true ]]; then
+	iptables -A rnode_iblock -p tcp --dport "$rnode_server_port" -s "$bootstrap_ip" -j RETURN
+	iptables -A rnode_iblock -p tcp --dport "$rnode_server_port" -j REJECT
+elif [[ $rnode_casper_required_signatures -eq 0 ]]; then
+	iptables -A rnode_iblock -p tcp --dport "$rnode_server_port" -j REJECT
+else
+	# Let bootstrap's server port open to any validator when genesis block
+	# creation requires non-zero number of signatures. Unauthorized validators
+	# are not in bonds.txt so it shouldn't be a problem.
+	true
+fi
+iptables -A rnode_iblock -p tcp --dport "$rnode_server_port_kademlia" -j REJECT
+iptables -A rnode_iblock -p tcp --dport "$rnode_grpc_port_external" -j REJECT
+
+iptables -F rnode_oblock
+iptables -A rnode_oblock -o lo -j RETURN
+iptables -A rnode_oblock -p tcp --dport "$bootstrap_port_kademlia" -j REJECT
+
+iptables -F rnode_isel
+iptables -A rnode_isel -j rnode_iblock
+iptables -F rnode_osel
+iptables -A rnode_osel -j rnode_oblock
+
+######################################################################
+# diagnostics setup
+
+network_id="${RD_OPTION_NETWORK_ID:-$rnode_server_network_id}"
+echo "Network ID: $network_id"
+
+DIAG_TAG=$(get_current_timestamp).$(sanitize_string "$network_id").$(hostname)
+if [[ -n "$RD_OPTION_DUMP_TAG" ]]; then
+	DIAG_TAG+=.$(sanitize_string "$RD_OPTION_DUMP_TAG")
+fi
+
+mkdir $LOCAL_DIAG_ROOT/$DIAG_TAG
+rm -f $DIAG_DIR
+ln -s $LOCAL_DIAG_ROOT/$DIAG_TAG $DIAG_DIR
+
+check_diag_directory
+
+mv /tmp/start-node.env $DIAG_DIR/
+
+######################################################################
+# BEGIN docker run
+
+docker_args=(
+	--name=rnode
+	--network=host
+	-v /var/lib/rnode:/var/lib/rnode
+	-v $DIAG_DIR:$DIAG_DIR
+	-v /var/lib/rnode-static:/var/lib/rnode-static:ro
+	-v /opt/YourKit-JavaProfiler:/opt/YourKit-JavaProfiler:ro
+)
+
+launcher_args=(
+	-J-Xss5m
+	-XX:+HeapDumpOnOutOfMemoryError
+	-XX:HeapDumpPath=$DIAG_DIR/heapdump_OOM.hprof
+	-XX:+ExitOnOutOfMemoryError
+	-XX:ErrorFile=$DIAG_DIR/hs_err.log
+	-XX:MaxJavaStackTraceDepth=100000
+	-Dlogback.configurationFile=/var/lib/rnode-static/logback.xml
+	-c /var/lib/rnode/rnode.conf
+	$(get_rnode_launcher_args)
+)
+
+run_args=(
+	--network "$network_id"
+	$(get_rnode_run_args)
+)
+
+if [[ $RD_OPTION_DEBUG == yes ]]; then
+	mkdir $DIAG_DIR/YourKit
+	launcher_args+=(
+		-J-Xdebug
+		-J-Xrunjdwp:transport=dt_socket,address=127.0.0.1:8888,server=y,suspend=n
+		-J-agentpath:/opt/YourKit-JavaProfiler/bin/linux-x86-64/libyjpagent.so=port=10001,listen=all,sessionname=$DIAG_TAG,dir=$DIAG_DIR/YourKit,logdir=$DIAG_DIR/YourKit
+		-XX:NativeMemoryTracking=detail
+	)
+fi
+
+if [[ -f /var/lib/rnode-static/environment.docker ]]; then
+	docker_args+=(--env-file=/var/lib/rnode-static/environment.docker)
+fi
+
+if [[ -f /var/lib/rnode-static/local.env ]]; then
+	source /var/lib/rnode-static/local.env
+fi
+
+logcmd docker run -d \
+	${docker_args[@]}  \
+	"$RD_OPTION_RNODE_DOCKER_IMAGE" \
+	${launcher_args[@]} \
+	run ${run_args[@]}
+	>/dev/null
+
+# END docker run
+######################################################################
+
+i=2
+sleep_time=5
+echo "Waiting $((i*sleep_time))s for RNode to start"
+
+while (( i )); do
+	container_id="$(docker ps -q -f name=rnode)"
+	if [[ -n "$container_id" ]]; then
+		echo "RNode is running"
+		nohup docker logs -f $container_id &> $DIAG_DIR/console.log &
+
+		node_pid="$(docker inspect -f '{{.State.Pid}}' rnode || echo 0)"
+		if (( node_pid )); then
+			nohup $INSTALL_DIR/pmap.py "$node_pid" "perf-bootstrap.c.developer-222401.internal" 8091 "$network_id" >/dev/null 2>&1 &
+		fi
+		break
+	fi
+
+	sleep $sleep_time
+	: $((i--))
+done
+
+wait_time_left="${RD_OPTION_WAIT_TIME:-600}"
+sleep_time=10
+echo "Waiting ${wait_time_left}s for approved block"
+
+while (( wait_time_left > 0 )); do
+	if [[ -z "$(docker ps -q -f ID=$container_id)" ]]; then
+		echo "RNode is not running" >&2
+		if [[ -n "$(docker ps -aq -f ID=$container_id)" ]]; then
+			echo "----- BEGIN RNODE OUTPUT -----" >&2
+			docker logs $container_id >&2 || true
+			echo "----- END RNODE OUTPUT -----" >&2
+		fi
+		exit 1
+	fi
+
+	height="$(docker exec $container_id ./bin/rnode show-blocks |\
+		sed -n '/^count: /{s///;p;q}')" || true
+	if (( height )); then
+		echo "Found approved block"
+		break
+	fi
+
+	sleep $sleep_time
+	: $(( wait_time_left -= sleep_time ))
+done
+
+if (( wait_time_left <= 0 )); then
+	echo "Did not find approved block" >&2
+	exit 1
+fi
+
+iptables -F rnode_isel
+iptables -F rnode_osel
+
+echo Finished

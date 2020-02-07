@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>RChain Node (RNode) Files</title>
+  </head>
+  <body>
+    <h1>RChain Node (RNode) Files</h1>
+    <ul>
+      <li><a href=/files>Data</a></li>
+      <li><a href=/diag>Diagnostics (Local)</a></li>
+      <li><a href="@@ARCHIVE_URL@@">Diagnostics (Archive)</a></li>
+      <li>
+        For realtime console output stream run
+        <pre>
+          curl http://@@HOSTNAME@@:8181/logs/name:rnode
+        </pre>
+      </li>
+    </ul>
+  </body>
+</html>

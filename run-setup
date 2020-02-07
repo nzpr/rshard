@@ -1,0 +1,150 @@
+#!/bin/bash
+set -e -o pipefail
+
+while :; do
+	_hostname="$(hostname -f)"
+	if [[ $_hostname == *.* && $_hostname != *.internal ]]; then
+		break
+	fi
+	systemctl restart systemd-networkd
+	echo "Waiting for FQDN..."
+	sleep 10
+done
+
+apt install -y --no-install-recommends \
+    apt-transport-https gnupg2 \
+    collectd collectd-utils liboping0 jq dnsutils \
+	bpfcc-tools iotop \
+	openjdk-11-jdk-headless \
+	nginx libnginx-mod-http-fancyindex \
+	coreutils tree \
+	build-essential autoconf automake libtool \
+	python3 python3-venv python3-dev \
+	unzip graphviz subversion
+
+curl -sSfL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+echo 'deb [arch=amd64] https://download.docker.com/linux/ubuntu cosmic stable' \
+    >/etc/apt/sources.list.d/docker-ce.list
+
+curl -sSfL https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+echo "deb http://packages.cloud.google.com/apt gcsfuse-bionic main" \
+	>/etc/apt/sources.list.d/gcsfuse.list
+
+apt update
+apt install -y --no-install-recommends --no-upgrade docker-ce
+apt install -y --no-install-recommends gcsfuse
+
+pushd scripts >/dev/null
+python3 -mvenv venv
+source ./venv/bin/activate
+# pyjq setup fails with errors similar to https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=917006
+# explicitly installing wheel fixes the error
+pip3 install wheel
+# upgrade setuptools for pyrchain to work
+pip3 install -U setuptools>=40.1
+pip3 install -U -r requirements.txt
+popd >/dev/null
+
+# config file for python scripts
+echo "influx_host: perf-bootstrap.c.developer-222401.internal" > scripts/scripts.conf
+echo "influx_port: 8093" >> scripts/scripts.conf
+
+
+network_dir="rshard"
+node_dir=$network_dir/$(hostname)
+
+install -C -m644 collectd.conf -t /etc/collectd/
+systemctl restart collectd
+
+if ! grep -Fq rundeck /root/.ssh/authorized_keys; then
+	mkdir -p -m700 /root/.ssh
+	cat $network_dir/rundeck-sshid.pub >>/root/.ssh/authorized_keys
+fi
+
+mkdir -m710 -p /var/lib/rnode-static
+chgrp www-data /var/lib/rnode-static
+
+mkdir -m750 -p /var/lib/rnode-diag
+chgrp www-data /var/lib/rnode-diag
+
+install -C -m600 \
+	$node_dir/node.key.pem \
+	-t /var/lib/rnode-static/
+
+install -C -m644 \
+	logback.xml \
+	$node_dir/node.certificate.pem \
+	-t /var/lib/rnode-static/
+
+rm -f /var/lib/rnode-static/validator-public-keys.txt
+
+for net_node_dir in $network_dir/node*; do
+	net_node_pubkey=$(
+		./scripts/merge-hocon-fragments -i $net_node_dir/rnode.conf.d |\
+		jq -r .rnode.casper.'"validator-public-key"')
+	echo $net_node_pubkey >>/var/lib/rnode-static/validator-public-keys.txt
+done
+
+mkdir -m700 -p /var/lib/rnode-static/rnode.conf.d
+
+shopt -s nullglob
+
+install -C -m600 \
+	rnode.conf.d/*.conf \
+	$network_dir/rnode.conf.d/*.conf \
+	$node_dir/rnode.conf.d/*.conf \
+	-t /var/lib/rnode-static/rnode.conf.d/
+
+# User override rnode.conf. Broken link will just be ignored.
+ln -sf /var/lib/rnode/rnode.override.conf \
+	/var/lib/rnode-static/rnode.conf.d/999-rnode.override.conf
+
+shopt -u nullglob
+
+if [[ -z "$(docker ps -q -f name='^logspout$')" ]]; then
+	docker rm logspout || true
+	docker pull gliderlabs/logspout
+	docker run -d --restart=unless-stopped --name=logspout \
+		-p 8181:80 -v /var/run/docker.sock:/var/run/docker.sock \
+		gliderlabs/logspout
+fi
+
+if ! getent passwd javadebug >/dev/null; then
+	useradd -rM -s /bin/false -d /home/javadebug javadebug
+	install -m700 -o javadebug -d /home/javadebug
+	install -m700 -o javadebug -d /home/javadebug/.ssh
+fi
+install -C -o javadebug authorized_keys.javadebug /home/javadebug/.ssh/authorized_keys
+
+install -C sshd_config -t /etc/ssh/
+systemctl reload sshd
+
+install -C -m644 nginx/* -t /etc/nginx/
+systemctl reload nginx
+
+mkdir -p /mnt/heapdumps || true
+
+install -d -m755 /usr/lib/systemd/system/
+install -C -m644 *.service *.timer *.mount -t /usr/lib/systemd/system/
+
+for unit in sync-diag.timer autopropose.service mnt-heapdumps.mount; do
+	unit_state=$(systemctl list-unit-files --no-legend $unit | awk '{print $2}')
+	if [[ $unit_state != masked* ]]; then
+		systemctl enable $unit
+		systemctl restart $unit
+	fi
+done
+
+yourkit_version=2019.1
+pushd /opt >/dev/null
+if [[ ! -e YourKit-JavaProfiler-$yourkit_version ]]; then
+	wget -N https://www.yourkit.com/download/docker/YourKit-JavaProfiler-$yourkit_version-docker.zip
+	unzip -x YourKit-JavaProfiler-$yourkit_version-docker.zip
+	ln -srf YourKit-JavaProfiler-$yourkit_version YourKit-JavaProfiler
+fi
+popd >/dev/null
+
+# download contracts
+svn export --force \
+	https://github.com/rchain/rchain/branches/dev/rholang/examples \
+	/var/lib/rnode-static/contracts

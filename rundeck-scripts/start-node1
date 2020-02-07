@@ -1,0 +1,41 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+# This fails if there are no RD_OPTION_ variables and that's fine.
+env | grep RD_OPTION_ >/tmp/start-node.env
+
+if [[ "$RD_OPTION_STOP_NODE" == yes ]]; then
+	stop-node
+fi
+
+running_id="$(docker ps -q -f name='^rnode$')"
+if [[ -n "$running_id" ]]; then
+	echo "Node is already running"
+	exit 0
+fi
+
+if [[ -n "$(docker ps -qa -f name='^rnode$')" ]]; then
+	archived_name="rnode.$(date +%s)"
+	echo "Existing dead container found, renaming to $archived_name"
+	docker rename rnode $archived_name >/dev/null
+fi
+
+echo "Pulling Docker image $RD_OPTION_RNODE_DOCKER_IMAGE"
+docker pull $RD_OPTION_RNODE_DOCKER_IMAGE
+
+mkdir -p /var/lib/rnode /var/lib/rnode/genesis
+
+try_download_file()
+(
+	local url="$1" dest=$2 mode=${3:-644}
+	umask $mode # local to myself, I'm running in sub-process (() vs {})
+	if [[ -z $url ]]; then
+		touch $dest
+	else
+		echo "Downloading $url to $dest"
+		curl -fsSL -o "$dest" "$url"
+	fi
+)
+
+try_download_file "$RD_OPTION_WALLETS_FILE_URL" /var/lib/rnode/genesis/wallets.txt

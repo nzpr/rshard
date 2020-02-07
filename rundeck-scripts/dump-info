@@ -1,0 +1,33 @@
+#!/bin/bash
+set -e -o pipefail
+source "$(dirname $0)/functions"
+
+node_pid="$(get_node_pid)"
+check_diag_directory
+out_dir="$DIAG_DIR/info/info.$(get_current_timestamp)"
+echo "Info directory: $out_dir"
+mkdir -p "$out_dir"
+
+dump_jcmd()
+{
+	local out_file
+	out_file="$out_dir/jcmd_$(echo -n "$*" | tr -C a-zA-Z0-9_ _).txt"
+	logcmd "jcmd $node_pid $@ &>$out_file" || true
+}
+
+docker inspect rnode >"$out_dir/docker_inspect.json"
+dump_jcmd GC.class_histogram
+dump_jcmd GC.class_stats
+dump_jcmd GC.heap_info
+dump_jcmd Thread.print
+dump_jcmd VM.classloader_stats
+dump_jcmd VM.command_line
+dump_jcmd VM.flags
+dump_jcmd VM.info
+dump_jcmd VM.metaspace
+dump_jcmd VM.system_properties
+dump_jcmd VM.version
+dump_jcmd VM.native_memory detail
+
+echo "Syncing files to remote archive..."
+sync-diag-dir

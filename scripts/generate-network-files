@@ -1,0 +1,49 @@
+#!/bin/bash
+set -e
+
+if [[ -z "$BASH_SOURCE" ]]; then
+	echo "Cannot run from stdin" >&2
+	exit 1
+fi
+
+if [[ $# -ne 4 ]]; then
+	echo "Usage: $0 <nodes-dir> <domain> <network-id> <count>" >&2
+	exit 1
+fi
+
+out_dir="$1"
+domain="$2"
+network_id="$3"
+count="$4"
+scripts_dir="$(dirname "$0")"
+
+cleanup()
+{
+	rm -r $venv_dir
+}
+trap cleanup EXIT
+venv_dir="$(mktemp -d $(basename "$0").XXXXXXXX)"
+
+python3 -mvenv $venv_dir
+source $venv_dir/bin/activate
+pip3 install -r "$scripts_dir/requirements.txt"
+
+bootstrap_url=
+
+umask 077
+mkdir -p "$out_dir"
+
+for i in $(seq 0 $((count-1))); do
+	host=node$i
+	node_dir="$out_dir/$host"
+	mkdir -p "$node_dir"
+	$scripts_dir/generate-node-files $host.$domain "$node_dir"
+done
+
+bootstrap_id="$($scripts_dir/pem-key-to-node-id $out_dir/node0/node.key.pem)"
+bootstrap_url="rnode://$bootstrap_id@node0.$domain?protocol=40400&discovery=40404"
+mkdir -p "$out_dir/rnode.conf.d"
+jo -d. -p \
+	"rnode.server.bootstrap=$bootstrap_url" \
+	"rnode.server.network-id=$network_id" \
+	>"$out_dir/rnode.conf.d/40-network.conf"
